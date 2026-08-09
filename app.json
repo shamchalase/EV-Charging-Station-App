@@ -1,14 +1,14 @@
 {
   "expo": {
-    "name": "react-native-app",
-    "slug": "react-native-app",
+    "name": "VoltCharge - EV Charging Network",
+    "slug": "voltcharge-ev-app",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "splash": {
       "image": "./assets/splashimg.png",
       "resizeMode": "contain",
-      "backgroundColor": "#6fa75e"
+      "backgroundColor": "#0F172A"
     },
     "updates": {
       "fallbackToCacheTimeout": 0
@@ -22,11 +22,12 @@
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#FFFFFF"
+        "backgroundColor": "#0F172A"
       }
     },
     "web": {
-      "favicon": "./assets/favicon.png"
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro"
     }
   }
 }
