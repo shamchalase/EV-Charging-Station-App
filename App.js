@@ -1,34 +1,40 @@
+import React from 'react';
 import { StatusBar } from 'expo-status-bar';
-import React, {useState} from 'react';
-import { StyleSheet, Text, View , TextInput, Button, Alert} from 'react-native';
-
-import Home from './Screens/Home'
-import IndividualPage from './Screens/IndividualPage';
-import Login from './Screens/Login';
-
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { NavigationContainer } from '@react-navigation/native';
-import { createStackNavigator } from '@react-navigation/stack';
-import TempCodeRunnerFile from './Components/tempCodeRunnerFile';
+import { createStackNavigator, CardStyleInterpolators } from '@react-navigation/stack';
+
+import Login from './Screens/Login';
+import Home from './Screens/Home';
+import IndividualPage from './Screens/IndividualPage';
+import { Colors } from './Components/theme';
 
 const Stack = createStackNavigator();
 
 export default function App() {
-
   return (
-    <NavigationContainer>
-      <Stack.Navigator initialRouteName="Login">
-        <Stack.Screen name="Login" component={Login} />
-        <Stack.Screen name="Home" component={Home} />
-        <Stack.Screen name="IndividualPage" component={IndividualPage} />
-        <Stack.Screen name="TempCodeRunner" component={TempCodeRunnerFile} />
-      </Stack.Navigator>
-    </NavigationContainer>
+    <SafeAreaProvider>
+      <NavigationContainer>
+        <StatusBar style="auto" />
+        <Stack.Navigator
+          initialRouteName="Login"
+          screenOptions={{
+            headerShown: false,
+            cardStyle: { backgroundColor: Colors.background },
+            cardStyleInterpolator: CardStyleInterpolators.forHorizontalIOS,
+          }}
+        >
+          <Stack.Screen name="Login" component={Login} />
+          <Stack.Screen name="Home" component={Home} />
+          <Stack.Screen 
+            name="IndividualPage" 
+            component={IndividualPage} 
+            options={{
+              cardStyleInterpolator: CardStyleInterpolators.forFadeFromBottomAndroid,
+            }}
+          />
+        </Stack.Navigator>
+      </NavigationContainer>
+    </SafeAreaProvider>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#fff',
-  },
-});
