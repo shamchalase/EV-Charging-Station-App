@@ -164,6 +164,15 @@ function Home({ navigation }) {
 
     // Filter by City, Brand, Availability, Speed, Favorites, and Search Query
     const filtered = listWithDistance.filter((station) => {
+      // City filter: strictly show current city stations unless 'all' is chosen or station is nearby (< 60 km)
+      if (selectedCityId !== 'all') {
+        const isSameCity = station.city === selectedCityId;
+        const isWithinRange = (station.calculatedDistanceKm || 0) <= 60;
+        if (!isSameCity && !isWithinRange) {
+          return false;
+        }
+      }
+
       // Favorites filter
       if (onlyFavorites && !favoriteIds.includes(station.id)) {
         return false;

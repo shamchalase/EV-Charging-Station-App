@@ -7,8 +7,7 @@ export const availableCities = [
   { id: 'pune', name: 'Pune, Maharashtra', shortName: 'Pune', latitude: 18.5204, longitude: 73.8567, isDefault: true },
   { id: 'mumbai', name: 'Mumbai, Maharashtra', shortName: 'Mumbai', latitude: 19.0760, longitude: 72.8777 },
   { id: 'delhi', name: 'Delhi NCR & Gurugram', shortName: 'Delhi NCR', latitude: 28.4980, longitude: 77.0850 },
-  { id: 'bengaluru', name: 'Bengaluru, Karnataka', shortName: 'Bengaluru', latitude: 12.9716, longitude: 77.5946 },
-  { id: 'hyderabad', name: 'Hyderabad, Telangana', shortName: 'Hyderabad', latitude: 17.3850, longitude: 78.4867 },
+  { id: 'all', name: 'All Cities (Pan-India Network)', shortName: 'All Cities', latitude: 18.5204, longitude: 73.8567 },
 ];
 
 export const currentUser = {
