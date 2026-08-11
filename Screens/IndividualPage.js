@@ -18,6 +18,7 @@ import { Colors, Shadows, BorderRadius, Spacing, Typography } from '../Component
 import { Ionicons, MaterialCommunityIcons, FontAwesome5 } from '@expo/vector-icons';
 import { stations, currentUser } from '../Components/data';
 import { formatDistance, estimateTravelTime } from '../Components/locationUtils';
+import { DB } from '../Components/db';
 
 function IndividualPage({ route, navigation }) {
   // Grab station and userLocation from route params or fallback to first station
@@ -38,6 +39,18 @@ function IndividualPage({ route, navigation }) {
   const [energyDeliveredKwh, setEnergyDeliveredKwh] = useState(0);
   const [runningCost, setRunningCost] = useState(0);
   const [chargingSeconds, setChargingSeconds] = useState(0);
+
+  // Check initial favorite status
+  useEffect(() => {
+    DB.getFavorites().then((favs) => {
+      setIsFavorite(favs.includes(station.id));
+    });
+  }, [station.id]);
+
+  const toggleFavorite = async () => {
+    const updated = await DB.toggleFavorite(station.id);
+    setIsFavorite(updated.includes(station.id));
+  };
 
   // Dynamic calculated distance
   const displayDistance = station.calculatedDistanceKm !== undefined 
@@ -60,7 +73,7 @@ function IndividualPage({ route, navigation }) {
   const handleShare = async () => {
     try {
       await Share.share({
-        message: `⚡ Check out ${station.stationName} on VoltCharge EV Network!\nAddress: ${station.address}\nDistance: ${displayDistance}\nMax Speed: ${station.maxPowerKw} kW • Rate: ₹${station.pricePerKwh}/kWh`,
+        message: `⚡ Check out ${station.stationName} in ${station.cityName || 'Pune'} on VoltCharge!\nAddress: ${station.address}\nDistance: ${displayDistance} (${displayTime})\nMax Speed: ${station.maxPowerKw} kW • Rate: ₹${station.pricePerKwh}/kWh`,
       });
     } catch (error) {
       console.log(error);
@@ -69,8 +82,8 @@ function IndividualPage({ route, navigation }) {
 
   // Open direct turn-by-turn navigation in Maps
   const handleDirections = () => {
-    const lat = station.latitude || 28.4952;
-    const lon = station.longitude || 77.0892;
+    const lat = station.latitude || 18.5204;
+    const lon = station.longitude || 73.8567;
     const url = Platform.select({
       ios: `maps://app?daddr=${lat},${lon}`,
       android: `google.navigation:q=${lat},${lon}`,
@@ -93,10 +106,26 @@ function IndividualPage({ route, navigation }) {
       });
   };
 
-  // Confirm booking & create pass
-  const handleConfirmBooking = () => {
+  // Confirm booking & save to Persistent Database
+  const handleConfirmBooking = async () => {
     const randomCode = 'VC-' + Math.floor(100000 + Math.random() * 900000);
     setBookingRef(randomCode);
+
+    const bookingObject = {
+      id: randomCode,
+      stationId: station.id,
+      stationName: station.stationName,
+      portName: selectedPort?.name || 'Fast Port 01',
+      durationMins: selectedDurationMins,
+      kwhCharged: parseFloat(estimatedKwh),
+      cost: estimatedCost,
+      date: new Date().toISOString(),
+      status: 'confirmed',
+      vehicle: currentUser.vehicle.model,
+    };
+
+    // Save to AsyncStorage local database
+    await DB.saveBooking(bookingObject);
     setShowBookingModal(true);
   };
 
@@ -156,7 +185,7 @@ function IndividualPage({ route, navigation }) {
             <View style={styles.rightNavActions}>
               <TouchableOpacity 
                 style={styles.navButton} 
-                onPress={() => setIsFavorite(!isFavorite)}
+                onPress={toggleFavorite}
                 activeOpacity={0.7}
               >
                 <Ionicons 
@@ -230,7 +259,7 @@ function IndividualPage({ route, navigation }) {
             <View style={styles.locationDetails}>
               <Text style={styles.locationAddress}>{station.address}</Text>
               <Text style={styles.locationDistance}>
-                {displayDistance} away from your live GPS spot • {displayTime} drive
+                {displayDistance} away from your current location • {displayTime} drive
               </Text>
             </View>
             <TouchableOpacity 
@@ -417,7 +446,7 @@ function IndividualPage({ route, navigation }) {
             <View style={styles.passHeader}>
               <View style={styles.passHeaderBadge}>
                 <Ionicons name="checkmark-circle" size={24} color={Colors.success} />
-                <Text style={styles.passHeaderTitle}>Slot Reserved Successfully!</Text>
+                <Text style={styles.passHeaderTitle}>Slot Reserved & Saved!</Text>
               </View>
               <TouchableOpacity onPress={() => setShowBookingModal(false)}>
                 <Ionicons name="close" size={24} color={Colors.textMuted} />
@@ -425,7 +454,7 @@ function IndividualPage({ route, navigation }) {
             </View>
 
             <Text style={styles.passSub}>
-              Your charging slot is held for 30 minutes. Scan this QR code at the charger terminal.
+              Pass #{bookingRef} is saved to your bookings database. Present this QR at the terminal.
             </Text>
 
             {/* QR Ticket Container */}
@@ -473,7 +502,7 @@ function IndividualPage({ route, navigation }) {
               style={styles.closeModalBtn}
               onPress={() => setShowBookingModal(false)}
             >
-              <Text style={styles.closeModalBtnText}>View On Home Screen</Text>
+              <Text style={styles.closeModalBtnText}>Done & View In My Bookings</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -528,13 +557,13 @@ function IndividualPage({ route, navigation }) {
                 setShowChargingModal(false);
                 Alert.alert(
                   'Charging Complete! ⚡',
-                  `Delivered: ${energyDeliveredKwh} kWh\nTotal Charged: ₹${runningCost}\nFinal Battery: ${chargePct}%\nYour receipt has been sent to your email.`
+                  `Delivered: ${energyDeliveredKwh} kWh\nTotal Charged: ₹${runningCost}\nFinal Battery: ${chargePct}%\nYour receipt has been recorded and saved in your database.`
                 );
               }}
               activeOpacity={0.85}
             >
               <Ionicons name="stop-circle" size={20} color="#FFFFFF" style={{ marginRight: 6 }} />
-              <Text style={styles.stopChargingBtnText}>Stop Charging & Pay</Text>
+              <Text style={styles.stopChargingBtnText}>Stop Charging & Save Receipt</Text>
             </TouchableOpacity>
           </View>
         </View>

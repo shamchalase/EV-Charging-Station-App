@@ -13,122 +13,146 @@ import {
   ActivityIndicator,
   Platform,
 } from 'react-native';
-import * as Location from 'expo-location';
 import { Colors, Shadows, BorderRadius, Spacing, Typography } from '../Components/theme';
 import { Ionicons, MaterialCommunityIcons, FontAwesome5 } from '@expo/vector-icons';
 import Card from '../Components/card';
-import { stations as defaultStations, currentUser, manufacturerBrands } from '../Components/data';
-import { calculateDistanceKm, formatDistance, estimateTravelTime } from '../Components/locationUtils';
+import { stations as allStations, currentUser, manufacturerBrands, availableCities } from '../Components/data';
+import { calculateDistanceKm, formatDistance, estimateTravelTime, detectRealLocation } from '../Components/locationUtils';
+import { DB } from '../Components/db';
 
 function Home({ navigation }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedBrand, setSelectedBrand] = useState('all');
   const [onlyAvailable, setOnlyAvailable] = useState(false);
   const [onlyFastDC, setOnlyFastDC] = useState(false);
+  const [onlyFavorites, setOnlyFavorites] = useState(false);
   const [sortBy, setSortBy] = useState('distance'); // 'distance', 'speed', 'rating', 'price'
-  const [favoriteIds, setFavoriteIds] = useState(currentUser.savedStations || ['TS1']);
-  const [showProfileModal, setShowProfileModal] = useState(false);
+  
+  // Database States
+  const [userProfile, setUserProfile] = useState(currentUser);
+  const [walletBalance, setWalletBalance] = useState(currentUser.walletBalance);
+  const [favoriteIds, setFavoriteIds] = useState(currentUser.savedStations || ['PUNE_TESLA_HINJAWADI']);
+  const [bookingsList, setBookingsList] = useState([]);
+  const [transactionsList, setTransactionsList] = useState([]);
 
-  // User GPS Location State
+  // Location & City Switcher State (Default: Pune)
+  const [selectedCityId, setSelectedCityId] = useState('pune');
   const [userLocation, setUserLocation] = useState(currentUser.defaultLocation);
-  const [locationName, setLocationName] = useState(currentUser.defaultLocation.city);
+  const [locationName, setLocationName] = useState('Pune, Maharashtra');
   const [isDetectingLocation, setIsDetectingLocation] = useState(false);
-  const [locationError, setLocationError] = useState(null);
 
-  // Function to request and fetch user's live GPS coordinates
-  const detectUserCurrentLocation = async (showFeedback = false) => {
+  // Modals State
+  const [showProfileModal, setShowProfileModal] = useState(false);
+  const [showCityModal, setShowCityModal] = useState(false);
+  const [showBookingsModal, setShowBookingsModal] = useState(false);
+  const [showWalletModal, setShowWalletModal] = useState(false);
+  const [topUpAmount, setTopUpAmount] = useState('500');
+
+  // Load persistent data from Local Database on mount
+  useEffect(() => {
+    loadDatabaseState();
+    autoDetectLocation();
+  }, []);
+
+  const loadDatabaseState = async () => {
+    const profile = await DB.getUserProfile();
+    const bookings = await DB.getBookings();
+    const favs = await DB.getFavorites();
+    const txns = await DB.getTransactions();
+
+    setUserProfile(profile);
+    setWalletBalance(profile.walletBalance || 1450);
+    setBookingsList(bookings);
+    setFavoriteIds(favs);
+    setTransactionsList(txns);
+  };
+
+  // Auto-detect real location using GPS / IP Network
+  const autoDetectLocation = async (userInitiated = false) => {
     setIsDetectingLocation(true);
-    setLocationError(null);
-
     try {
-      // 1. Try Expo Location API
-      let { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') {
-        // If permission denied, fallback to browser geolocation on web if available
-        if (Platform.OS === 'web' && navigator.geolocation) {
-          navigator.geolocation.getCurrentPosition(
-            (pos) => {
-              const coords = {
-                latitude: pos.coords.latitude,
-                longitude: pos.coords.longitude,
-                city: 'Current Detected Location',
-              };
-              setUserLocation(coords);
-              setLocationName('Live GPS Location');
-              setIsDetectingLocation(false);
-              if (showFeedback) Alert.alert('GPS Location Updated', 'Showing nearest charging stations based on your live coordinates.');
-            },
-            (err) => {
-              setIsDetectingLocation(false);
-              setLocationName('Delhi NCR (Default)');
-            }
-          );
-          return;
-        }
-
-        setLocationError('Permission denied. Using default location.');
-        setIsDetectingLocation(false);
-        return;
-      }
-
-      // Fetch accurate position
-      let location = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.Balanced,
-      });
-
-      const { latitude, longitude } = location.coords;
-      let detectedCityName = 'Live GPS Location';
-
-      try {
-        // Reverse geocoding to human readable place name
-        let reverseGeocode = await Location.reverseGeocodeAsync({ latitude, longitude });
-        if (reverseGeocode && reverseGeocode.length > 0) {
-          const place = reverseGeocode[0];
-          detectedCityName = [place.district || place.subregion || place.name, place.city]
-            .filter(Boolean)
-            .join(', ') || 'Live Location';
-        }
-      } catch (e) {
-        detectedCityName = `${latitude.toFixed(3)}°, ${longitude.toFixed(3)}°`;
-      }
-
+      const loc = await detectRealLocation();
       setUserLocation({
-        latitude,
-        longitude,
-        city: detectedCityName,
+        latitude: loc.latitude,
+        longitude: loc.longitude,
+        city: loc.cityName,
       });
-      setLocationName(detectedCityName);
+      setLocationName(loc.cityName);
 
-      if (showFeedback) {
-        Alert.alert('Location Detected 📍', `Updated your position to: ${detectedCityName}\nShowing closest charging stations.`);
+      // Match city id if in Pune, Mumbai, etc.
+      const lower = loc.cityName.toLowerCase();
+      if (lower.includes('pune')) setSelectedCityId('pune');
+      else if (lower.includes('mumbai')) setSelectedCityId('mumbai');
+      else if (lower.includes('delhi') || lower.includes('gurugram')) setSelectedCityId('delhi');
+      else if (lower.includes('bengaluru')) setSelectedCityId('bengaluru');
+      else if (lower.includes('hyderabad')) setSelectedCityId('hyderabad');
+
+      if (userInitiated) {
+        Alert.alert('Location Updated 📍', `Detected Location: ${loc.cityName}\nNearest charging stations recalculated.`);
       }
-    } catch (err) {
-      console.log('Location detection fallback:', err);
-      setLocationError('Could not fetch live GPS. Showing Delhi NCR hubs.');
+    } catch (e) {
+      setLocationName('Pune, Maharashtra');
     } finally {
       setIsDetectingLocation(false);
     }
   };
 
-  // Auto-detect GPS location on component mount
-  useEffect(() => {
-    detectUserCurrentLocation(false);
-  }, []);
-
-  // Toggle favorite station
-  const toggleFavorite = (stationId) => {
-    setFavoriteIds((prev) =>
-      prev.includes(stationId) ? prev.filter((id) => id !== stationId) : [...prev, stationId]
-    );
+  // Switch City Manually
+  const handleSelectCity = (city) => {
+    setSelectedCityId(city.id);
+    setUserLocation({
+      latitude: city.latitude,
+      longitude: city.longitude,
+      city: city.name,
+    });
+    setLocationName(city.name);
+    setShowCityModal(false);
   };
 
-  // Calculate live dynamic distance & sort all stations from user's current GPS location
+  // Toggle favorite station in Local DB
+  const toggleFavorite = async (stationId) => {
+    const updated = await DB.toggleFavorite(stationId);
+    setFavoriteIds(updated);
+  };
+
+  // Wallet Top-Up Handler
+  const handleTopUpWallet = async (amount) => {
+    const num = parseInt(amount, 10);
+    if (!num || num <= 0) return;
+    const newBal = await DB.addWalletBalance(num);
+    setWalletBalance(newBal);
+    const txns = await DB.getTransactions();
+    setTransactionsList(txns);
+    Alert.alert('Payment Successful! 💳', `Added ₹${num} to your VoltCharge Wallet.\nCurrent Balance: ₹${newBal}`);
+  };
+
+  // Cancel Booking in Local DB
+  const handleCancelBooking = async (bookingId, cost) => {
+    Alert.alert('Cancel Slot Reservation', 'Are you sure? Your payment will be refunded to your wallet.', [
+      { text: 'No', style: 'cancel' },
+      {
+        text: 'Yes, Cancel & Refund',
+        style: 'destructive',
+        onPress: async () => {
+          const updated = await DB.cancelBooking(bookingId);
+          setBookingsList(updated);
+          if (cost) {
+            const newBal = await DB.addWalletBalance(cost);
+            setWalletBalance(newBal);
+          }
+          Alert.alert('Cancelled & Refunded', 'Slot reservation cancelled. ₹' + cost + ' has been refunded to your wallet.');
+        },
+      },
+    ]);
+  };
+
+  // Calculate live dynamic distance & sort all stations from user's current city/GPS
   const processedStations = useMemo(() => {
-    const userLat = userLocation?.latitude || 28.4980;
-    const userLon = userLocation?.longitude || 77.0850;
+    const userLat = userLocation?.latitude || 18.5204;
+    const userLon = userLocation?.longitude || 73.8567;
 
     // Map each station with calculated live distance from user GPS
-    const listWithDistance = defaultStations.map((st) => {
+    const listWithDistance = allStations.map((st) => {
       const dist = calculateDistanceKm(userLat, userLon, st.latitude, st.longitude);
       const travelTime = estimateTravelTime(dist);
       return {
@@ -138,8 +162,12 @@ function Home({ navigation }) {
       };
     });
 
-    // Filter by Brand, Availability, Speed, and Search Query
+    // Filter by City, Brand, Availability, Speed, Favorites, and Search Query
     const filtered = listWithDistance.filter((station) => {
+      // Favorites filter
+      if (onlyFavorites && !favoriteIds.includes(station.id)) {
+        return false;
+      }
       // Brand filter
       if (selectedBrand !== 'all' && station.company.toLowerCase() !== selectedBrand.toLowerCase()) {
         return false;
@@ -158,7 +186,8 @@ function Home({ navigation }) {
         const matchesName = station.stationName.toLowerCase().includes(query);
         const matchesAddress = station.address.toLowerCase().includes(query);
         const matchesBrand = station.company.toLowerCase().includes(query);
-        return matchesName || matchesAddress || matchesBrand;
+        const matchesCity = (station.cityName || '').toLowerCase().includes(query);
+        return matchesName || matchesAddress || matchesBrand || matchesCity;
       }
       return true;
     });
@@ -179,7 +208,7 @@ function Home({ navigation }) {
       }
       return 0;
     });
-  }, [userLocation, searchQuery, selectedBrand, onlyAvailable, onlyFastDC, sortBy]);
+  }, [userLocation, searchQuery, selectedBrand, onlyAvailable, onlyFastDC, onlyFavorites, sortBy, favoriteIds]);
 
   // Closest station ID (if sorted by distance)
   const closestStationId = processedStations.length > 0 && sortBy === 'distance' ? processedStations[0].id : null;
@@ -204,13 +233,13 @@ function Home({ navigation }) {
               <Text style={styles.avatarText}>AR</Text>
             </View>
             <View style={{ marginLeft: 10 }}>
-              <Text style={styles.greetingText}>Hello, {currentUser.name.split(' ')[0]} ⚡</Text>
+              <Text style={styles.greetingText}>Hello, {userProfile.name.split(' ')[0]} ⚡</Text>
               
-              {/* Dynamic GPS Location Pill with Refresh Trigger */}
+              {/* Interactive City / Location Selector */}
               <TouchableOpacity 
                 style={styles.locationPill}
                 activeOpacity={0.7}
-                onPress={() => detectUserCurrentLocation(true)}
+                onPress={() => setShowCityModal(true)}
               >
                 {isDetectingLocation ? (
                   <ActivityIndicator size="small" color={Colors.primary} style={{ marginRight: 4 }} />
@@ -218,56 +247,70 @@ function Home({ navigation }) {
                   <Ionicons name="location-sharp" size={13} color={Colors.primaryNeon} />
                 )}
                 <Text style={styles.locationText} numberOfLines={1}>
-                  {isDetectingLocation ? 'Detecting GPS...' : locationName}
+                  {locationName}
                 </Text>
-                <Ionicons name="sync-outline" size={12} color={Colors.textSecondary} style={{ marginLeft: 4 }} />
+                <Ionicons name="chevron-down" size={12} color={Colors.textSecondary} style={{ marginLeft: 3 }} />
               </TouchableOpacity>
             </View>
           </TouchableOpacity>
 
           <View style={styles.headerActions}>
+            {/* Bookings / Sessions Button */}
             <TouchableOpacity 
               style={styles.iconButton} 
               activeOpacity={0.7}
-              onPress={() => setShowProfileModal(true)}
+              onPress={() => setShowBookingsModal(true)}
             >
-              <MaterialCommunityIcons name="wallet-outline" size={20} color={Colors.textPrimary} />
+              <Ionicons name="calendar-outline" size={18} color={Colors.textPrimary} />
+              {bookingsList.filter((b) => b.status !== 'cancelled').length > 0 && (
+                <View style={styles.dotBadge} />
+              )}
+            </TouchableOpacity>
+
+            {/* Wallet Button */}
+            <TouchableOpacity 
+              style={[styles.iconButton, { marginLeft: 6 }]} 
+              activeOpacity={0.7}
+              onPress={() => setShowWalletModal(true)}
+            >
+              <MaterialCommunityIcons name="wallet-outline" size={18} color={Colors.primaryDark} />
               <View style={styles.walletBadge}>
-                <Text style={styles.walletBadgeText}>₹1.4k</Text>
+                <Text style={styles.walletBadgeText}>₹{walletBalance}</Text>
               </View>
             </TouchableOpacity>
 
+            {/* Logout Button */}
             <TouchableOpacity 
-              style={[styles.iconButton, { marginLeft: 8 }]} 
+              style={[styles.iconButton, { marginLeft: 6 }]} 
               activeOpacity={0.7}
               onPress={() => navigation.navigate('Login')}
             >
-              <Ionicons name="log-out-outline" size={20} color={Colors.textSecondary} />
+              <Ionicons name="log-out-outline" size={18} color={Colors.textSecondary} />
             </TouchableOpacity>
           </View>
         </View>
 
-        {/* Live GPS Proximity Banner */}
+        {/* Live Location Proximity Banner with Pune Highlighting */}
         <View style={styles.gpsBanner}>
           <View style={styles.gpsBannerLeft}>
             <View style={styles.gpsPulseCircle}>
               <Ionicons name="navigate" size={16} color="#FFFFFF" />
             </View>
             <View style={{ marginLeft: 10, flex: 1 }}>
-              <Text style={styles.gpsBannerTitle}>Live Location-Based Routing</Text>
+              <Text style={styles.gpsBannerTitle}>Location: {locationName}</Text>
               <Text style={styles.gpsBannerSub}>
-                Stations are sorted dynamically from your current position ({formatDistance(processedStations[0]?.calculatedDistanceKm || 0)} nearest).
+                {processedStations.length} EV stations calculated • {formatDistance(processedStations[0]?.calculatedDistanceKm || 0)} nearest
               </Text>
             </View>
           </View>
 
           <TouchableOpacity 
             style={styles.gpsRefreshBtn}
-            onPress={() => detectUserCurrentLocation(true)}
+            onPress={() => autoDetectLocation(true)}
             activeOpacity={0.8}
           >
-            <Ionicons name="locate" size={16} color={Colors.primaryDark} />
-            <Text style={styles.gpsRefreshText}>Update GPS</Text>
+            <Ionicons name="locate" size={14} color={Colors.primaryDark} />
+            <Text style={styles.gpsRefreshText}>Auto-Detect</Text>
           </TouchableOpacity>
         </View>
 
@@ -276,11 +319,11 @@ function Home({ navigation }) {
           <View style={styles.vehicleHeader}>
             <View style={styles.vehicleInfo}>
               <Text style={styles.vehicleSub}>Connected Vehicle</Text>
-              <Text style={styles.vehicleName}>{currentUser.vehicle.model}</Text>
+              <Text style={styles.vehicleName}>{userProfile.vehicle?.model || 'Tata Nexon EV Max'}</Text>
             </View>
             <View style={styles.portBadge}>
               <MaterialCommunityIcons name="ev-plug-ccs2" size={14} color={Colors.primaryNeon} />
-              <Text style={styles.portBadgeText}>{currentUser.vehicle.portType}</Text>
+              <Text style={styles.portBadgeText}>{userProfile.vehicle?.portType || 'CCS-2'}</Text>
             </View>
           </View>
 
@@ -289,7 +332,7 @@ function Home({ navigation }) {
               <View 
                 style={[
                   styles.batteryBarFill, 
-                  { width: `${currentUser.vehicle.currentBatteryPct}%` }
+                  { width: `${userProfile.vehicle?.currentBatteryPct || 78}%` }
                 ]} 
               />
             </View>
@@ -297,17 +340,17 @@ function Home({ navigation }) {
 
           <View style={styles.vehicleStatsRow}>
             <View style={styles.statItem}>
-              <Text style={styles.statValue}>{currentUser.vehicle.currentBatteryPct}%</Text>
+              <Text style={styles.statValue}>{userProfile.vehicle?.currentBatteryPct || 78}%</Text>
               <Text style={styles.statLabel}>Battery Level</Text>
             </View>
             <View style={styles.statDivider} />
             <View style={styles.statItem}>
-              <Text style={styles.statValue}>{currentUser.vehicle.estimatedRangeKm} km</Text>
+              <Text style={styles.statValue}>{userProfile.vehicle?.estimatedRangeKm || 284} km</Text>
               <Text style={styles.statLabel}>Remaining Range</Text>
             </View>
             <View style={styles.statDivider} />
             <View style={styles.statItem}>
-              <Text style={styles.statValue}>{currentUser.vehicle.fastChargeSpeedKw} kW</Text>
+              <Text style={styles.statValue}>{userProfile.vehicle?.fastChargeSpeedKw || 50} kW</Text>
               <Text style={styles.statLabel}>Max DC Speed</Text>
             </View>
           </View>
@@ -318,7 +361,7 @@ function Home({ navigation }) {
           <Ionicons name="search" size={20} color={Colors.textMuted} style={styles.searchIcon} />
           <TextInput
             style={styles.searchInput}
-            placeholder="Search stations, highway, city, or brand..."
+            placeholder="Search Pune, Baner, Hinjawadi, Mumbai, or Hub Name..."
             placeholderTextColor={Colors.textMuted}
             value={searchQuery}
             onChangeText={setSearchQuery}
@@ -339,7 +382,7 @@ function Home({ navigation }) {
             contentContainerStyle={styles.filterScroll}
           >
             {manufacturerBrands.map((brand) => {
-              const isSelected = selectedBrand === brand.id;
+              const isSelected = selectedBrand === brand.id && !onlyFavorites;
               return (
                 <TouchableOpacity
                   key={brand.id}
@@ -348,11 +391,14 @@ function Home({ navigation }) {
                     styles.brandPill,
                     isSelected && styles.brandPillActive,
                   ]}
-                  onPress={() => setSelectedBrand(brand.id)}
+                  onPress={() => {
+                    setSelectedBrand(brand.id);
+                    setOnlyFavorites(false);
+                  }}
                 >
                   <Ionicons 
                     name={brand.icon} 
-                    size={16} 
+                    size={15} 
                     color={isSelected ? '#FFFFFF' : brand.color} 
                     style={{ marginRight: 6 }}
                   />
@@ -365,6 +411,29 @@ function Home({ navigation }) {
                 </TouchableOpacity>
               );
             })}
+
+            {/* Favorites Toggle Pill */}
+            <TouchableOpacity
+              activeOpacity={0.8}
+              style={[
+                styles.quickFilterPill,
+                onlyFavorites && styles.quickFilterPillActive,
+              ]}
+              onPress={() => setOnlyFavorites(!onlyFavorites)}
+            >
+              <Ionicons 
+                name={onlyFavorites ? "heart" : "heart-outline"} 
+                size={14} 
+                color={onlyFavorites ? '#FFFFFF' : '#EF4444'} 
+                style={{ marginRight: 4 }}
+              />
+              <Text style={[
+                styles.quickFilterText,
+                onlyFavorites && styles.quickFilterTextActive,
+              ]}>
+                Favorites ({favoriteIds.length})
+              </Text>
+            </TouchableOpacity>
 
             {/* Fast DC toggle pill */}
             <TouchableOpacity
@@ -443,19 +512,24 @@ function Home({ navigation }) {
         <View style={styles.sectionHeader}>
           <View>
             <Text style={styles.sectionTitle}>
-              {selectedBrand === 'all' ? 'Charging Hubs Near You' : `${selectedBrand} Stations`}
+              {onlyFavorites
+                ? 'Saved Favorite Stations'
+                : selectedBrand === 'all'
+                ? `Charging Hubs in ${locationName.split(',')[0]}`
+                : `${selectedBrand} Stations in ${locationName.split(',')[0]}`}
             </Text>
             <Text style={styles.sectionSubtitle}>
-              Found {processedStations.length} stations matching your criteria
+              Found {processedStations.length} charging locations
             </Text>
           </View>
 
-          {(selectedBrand !== 'all' || onlyFastDC || onlyAvailable || searchQuery || sortBy !== 'distance') && (
+          {(selectedBrand !== 'all' || onlyFastDC || onlyAvailable || onlyFavorites || searchQuery || sortBy !== 'distance') && (
             <TouchableOpacity 
               onPress={() => {
                 setSelectedBrand('all');
                 setOnlyFastDC(false);
                 setOnlyAvailable(false);
+                setOnlyFavorites(false);
                 setSearchQuery('');
                 setSortBy('distance');
               }}
@@ -481,9 +555,9 @@ function Home({ navigation }) {
         ) : (
           <View style={styles.emptyState}>
             <MaterialCommunityIcons name="ev-station" size={54} color={Colors.textMuted} />
-            <Text style={styles.emptyStateTitle}>No Nearby Charging Stations</Text>
+            <Text style={styles.emptyStateTitle}>No Charging Stations Found</Text>
             <Text style={styles.emptyStateSubtitle}>
-              Try adjusting your search terms, changing filters, or expanding your search radius.
+              Try selecting a different city like Pune or Mumbai, or adjusting your filter criteria.
             </Text>
             <TouchableOpacity 
               style={styles.emptyResetButton}
@@ -491,17 +565,225 @@ function Home({ navigation }) {
                 setSelectedBrand('all');
                 setOnlyFastDC(false);
                 setOnlyAvailable(false);
+                setOnlyFavorites(false);
                 setSearchQuery('');
                 setSortBy('distance');
               }}
             >
-              <Text style={styles.emptyResetText}>View All Nearby Stations</Text>
+              <Text style={styles.emptyResetText}>View All Stations</Text>
             </TouchableOpacity>
           </View>
         )}
       </ScrollView>
 
-      {/* Driver Profile & EV Stats Modal */}
+      {/* ==========================================
+          CITY SELECTOR MODAL
+         ========================================== */}
+      <Modal
+        visible={showCityModal}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setShowCityModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContainer}>
+            <View style={styles.modalHeader}>
+              <View>
+                <Text style={styles.modalTitle}>Choose City / Region</Text>
+                <Text style={styles.modalSubTitle}>Select city to view nearby charging networks</Text>
+              </View>
+              <TouchableOpacity onPress={() => setShowCityModal(false)}>
+                <Ionicons name="close-circle" size={26} color={Colors.textMuted} />
+              </TouchableOpacity>
+            </View>
+
+            {/* GPS Auto-Detect Button in Modal */}
+            <TouchableOpacity 
+              style={styles.modalGpsAutoBtn}
+              onPress={() => {
+                setShowCityModal(false);
+                autoDetectLocation(true);
+              }}
+            >
+              <Ionicons name="navigate-circle" size={22} color={Colors.primary} />
+              <View style={{ marginLeft: 10, flex: 1 }}>
+                <Text style={styles.modalGpsAutoTitle}>Use Current Live GPS Location</Text>
+                <Text style={styles.modalGpsAutoSub}>Detects exact street & nearest charging bays</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
+            </TouchableOpacity>
+
+            <Text style={styles.citySectionHeader}>Supported Hub Cities</Text>
+
+            {availableCities.map((city) => {
+              const isSelected = selectedCityId === city.id;
+              return (
+                <TouchableOpacity
+                  key={city.id}
+                  style={[styles.cityRow, isSelected && styles.cityRowActive]}
+                  onPress={() => handleSelectCity(city)}
+                >
+                  <View style={styles.cityRowLeft}>
+                    <Ionicons 
+                      name="location" 
+                      size={18} 
+                      color={isSelected ? Colors.primaryNeon : Colors.textMuted} 
+                    />
+                    <Text style={[styles.cityName, isSelected && styles.cityNameActive]}>
+                      {city.name}
+                    </Text>
+                  </View>
+                  {isSelected && (
+                    <Ionicons name="checkmark-circle" size={20} color={Colors.primaryNeon} />
+                  )}
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        </View>
+      </Modal>
+
+      {/* ==========================================
+          MY BOOKINGS & SESSIONS MODAL
+         ========================================== */}
+      <Modal
+        visible={showBookingsModal}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setShowBookingsModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContainer, { maxHeight: '85%' }]}>
+            <View style={styles.modalHeader}>
+              <View>
+                <Text style={styles.modalTitle}>My Slot Reservations</Text>
+                <Text style={styles.modalSubTitle}>Active passes and charging history</Text>
+              </View>
+              <TouchableOpacity onPress={() => setShowBookingsModal(false)}>
+                <Ionicons name="close-circle" size={26} color={Colors.textMuted} />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView showsVerticalScrollIndicator={false}>
+              {bookingsList.length > 0 ? (
+                bookingsList.map((booking) => {
+                  const isCancelled = booking.status === 'cancelled';
+                  return (
+                    <View key={booking.id} style={[styles.bookingCard, isCancelled && styles.bookingCardCancelled]}>
+                      <View style={styles.bookingCardTop}>
+                        <View>
+                          <Text style={styles.bookingRefText}>Pass #{booking.id}</Text>
+                          <Text style={styles.bookingStationName}>{booking.stationName}</Text>
+                        </View>
+                        <View style={[
+                          styles.bookingStatusPill,
+                          isCancelled ? styles.statusCancelBg : styles.statusActiveBg
+                        ]}>
+                          <Text style={[
+                            styles.bookingStatusText,
+                            isCancelled ? styles.statusCancelText : styles.statusActiveText
+                          ]}>
+                            {isCancelled ? 'Cancelled' : 'Confirmed'}
+                          </Text>
+                        </View>
+                      </View>
+
+                      <View style={styles.bookingDetailsRow}>
+                        <Text style={styles.bookingDetailItem}>🔌 {booking.portName}</Text>
+                        <Text style={styles.bookingDetailItem}>⏱ {booking.durationMins} Mins</Text>
+                        <Text style={[styles.bookingDetailItem, { fontWeight: 'bold', color: Colors.primaryDark }]}>
+                          ₹{booking.cost}
+                        </Text>
+                      </View>
+
+                      {!isCancelled && (
+                        <View style={styles.bookingActionsRow}>
+                          <TouchableOpacity 
+                            style={styles.cancelBookingBtn}
+                            onPress={() => handleCancelBooking(booking.id, booking.cost)}
+                          >
+                            <Text style={styles.cancelBookingBtnText}>Cancel & Refund</Text>
+                          </TouchableOpacity>
+                        </View>
+                      )}
+                    </View>
+                  );
+                })
+              ) : (
+                <View style={{ alignItems: 'center', padding: Spacing.xl }}>
+                  <Text style={{ color: Colors.textMuted }}>No active bookings yet.</Text>
+                </View>
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ==========================================
+          WALLET & PAYMENTS MODAL
+         ========================================== */}
+      <Modal
+        visible={showWalletModal}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setShowWalletModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContainer}>
+            <View style={styles.modalHeader}>
+              <View>
+                <Text style={styles.modalTitle}>VoltCharge Wallet</Text>
+                <Text style={styles.modalSubTitle}>Instant zero-fee EV charging balance</Text>
+              </View>
+              <TouchableOpacity onPress={() => setShowWalletModal(false)}>
+                <Ionicons name="close-circle" size={26} color={Colors.textMuted} />
+              </TouchableOpacity>
+            </View>
+
+            {/* Wallet Balance Card */}
+            <View style={styles.walletHeroCard}>
+              <Text style={styles.walletHeroLabel}>Available Balance</Text>
+              <Text style={styles.walletHeroValue}>₹{walletBalance}</Text>
+              <Text style={styles.walletHeroSub}>Auto-applied at all verified charging bays</Text>
+            </View>
+
+            <Text style={styles.citySectionHeader}>Quick Add Funds (UPI / Card)</Text>
+            <View style={styles.topUpRow}>
+              {['500', '1000', '2000'].map((amt) => (
+                <TouchableOpacity
+                  key={amt}
+                  style={styles.topUpBtn}
+                  onPress={() => handleTopUpWallet(amt)}
+                >
+                  <Text style={styles.topUpBtnText}>+₹{amt}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <Text style={styles.citySectionHeader}>Recent Transactions</Text>
+            <ScrollView style={{ maxHeight: 180 }} showsVerticalScrollIndicator={false}>
+              {transactionsList.map((txn) => (
+                <View key={txn.id} style={styles.txnRow}>
+                  <View>
+                    <Text style={styles.txnTitle}>{txn.title}</Text>
+                    <Text style={styles.txnDate}>{txn.date}</Text>
+                  </View>
+                  <Text style={[
+                    styles.txnAmount,
+                    txn.type === 'credit' ? styles.txnCredit : styles.txnDebit
+                  ]}>
+                    {txn.type === 'credit' ? '+' : '-'}₹{txn.amount}
+                  </Text>
+                </View>
+              ))}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ==========================================
+          DRIVER & VEHICLE PROFILE MODAL
+         ========================================== */}
       <Modal
         visible={showProfileModal}
         animationType="slide"
@@ -521,26 +803,27 @@ function Home({ navigation }) {
               <View style={styles.modalAvatar}>
                 <Text style={styles.modalAvatarText}>AR</Text>
               </View>
-              <View style={{ marginLeft: 12 }}>
-                <Text style={styles.modalDriverName}>{currentUser.name}</Text>
-                <Text style={styles.modalDriverEmail}>{currentUser.email}</Text>
+              <View style={{ marginLeft: 12, flex: 1 }}>
+                <Text style={styles.modalDriverName}>{userProfile.name}</Text>
+                <Text style={styles.modalDriverEmail}>{userProfile.email}</Text>
+                <Text style={styles.modalDriverCity}>📍 {locationName}</Text>
               </View>
             </View>
 
             <View style={styles.statsGrid}>
               <View style={styles.statsGridItem}>
                 <MaterialCommunityIcons name="wallet" size={22} color={Colors.primaryDark} />
-                <Text style={styles.statsGridValue}>₹{currentUser.walletBalance}</Text>
-                <Text style={styles.statsGridLabel}>Wallet Balance</Text>
+                <Text style={styles.statsGridValue}>₹{walletBalance}</Text>
+                <Text style={styles.statsGridLabel}>Wallet</Text>
               </View>
               <View style={styles.statsGridItem}>
                 <MaterialCommunityIcons name="lightning-bolt" size={22} color={Colors.accentOrange} />
-                <Text style={styles.statsGridValue}>{currentUser.totalKwhCharged} kWh</Text>
+                <Text style={styles.statsGridValue}>{userProfile.totalKwhCharged} kWh</Text>
                 <Text style={styles.statsGridLabel}>Total Charged</Text>
               </View>
               <View style={styles.statsGridItem}>
                 <MaterialCommunityIcons name="leaf" size={22} color={Colors.success} />
-                <Text style={styles.statsGridValue}>{currentUser.co2SavedKg} kg</Text>
+                <Text style={styles.statsGridValue}>{userProfile.co2SavedKg} kg</Text>
                 <Text style={styles.statsGridLabel}>CO2 Offset</Text>
               </View>
             </View>
@@ -580,6 +863,7 @@ const styles = StyleSheet.create({
   profileSection: {
     flexDirection: 'row',
     alignItems: 'center',
+    flex: 1,
   },
   avatar: {
     width: 42,
@@ -611,13 +895,13 @@ const styles = StyleSheet.create({
     borderRadius: BorderRadius.full,
     borderWidth: 1,
     borderColor: Colors.border,
+    maxWidth: 165,
   },
   locationText: {
     fontSize: Typography.sizes.xs,
     color: Colors.textPrimary,
     marginLeft: 3,
     fontWeight: Typography.weights.bold,
-    maxWidth: 160,
   },
   headerActions: {
     flexDirection: 'row',
@@ -633,6 +917,15 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.border,
     ...Shadows.sm,
+  },
+  dotBadge: {
+    position: 'absolute',
+    top: 5,
+    right: 5,
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: Colors.primary,
   },
   walletBadge: {
     marginLeft: 4,
@@ -952,7 +1245,7 @@ const styles = StyleSheet.create({
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(15, 23, 42, 0.6)',
+    backgroundColor: 'rgba(15, 23, 42, 0.65)',
     justifyContent: 'flex-end',
   },
   modalContainer: {
@@ -971,6 +1264,211 @@ const styles = StyleSheet.create({
   modalTitle: {
     fontSize: Typography.sizes.xl,
     fontWeight: Typography.weights.bold,
+    color: Colors.textPrimary,
+  },
+  modalSubTitle: {
+    fontSize: Typography.sizes.xs,
+    color: Colors.textMuted,
+    marginTop: 2,
+  },
+  modalGpsAutoBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: Colors.primaryLight,
+    borderRadius: BorderRadius.lg,
+    padding: Spacing.md,
+    borderWidth: 1,
+    borderColor: 'rgba(5, 182, 107, 0.3)',
+    marginBottom: Spacing.md,
+  },
+  modalGpsAutoTitle: {
+    fontSize: Typography.sizes.sm,
+    fontWeight: Typography.weights.bold,
+    color: Colors.primaryDark,
+  },
+  modalGpsAutoSub: {
+    fontSize: Typography.sizes.xs - 1,
+    color: Colors.textSecondary,
+    marginTop: 2,
+  },
+  citySectionHeader: {
+    fontSize: Typography.sizes.xs,
+    fontWeight: Typography.weights.bold,
+    color: Colors.textMuted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginVertical: Spacing.xs,
+  },
+  cityRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.borderLight,
+  },
+  cityRowActive: {
+    backgroundColor: Colors.surfaceElevated,
+    paddingHorizontal: 8,
+    borderRadius: BorderRadius.md,
+  },
+  cityRowLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  cityName: {
+    fontSize: Typography.sizes.md,
+    fontWeight: Typography.weights.medium,
+    color: Colors.textPrimary,
+    marginLeft: 8,
+  },
+  cityNameActive: {
+    fontWeight: Typography.weights.bold,
+    color: Colors.primaryDark,
+  },
+  bookingCard: {
+    backgroundColor: Colors.surfaceElevated,
+    borderRadius: BorderRadius.lg,
+    padding: Spacing.md,
+    marginVertical: Spacing.xs,
+    borderWidth: 1,
+    borderColor: Colors.borderLight,
+  },
+  bookingCardCancelled: {
+    opacity: 0.6,
+  },
+  bookingCardTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+  },
+  bookingRefText: {
+    fontSize: Typography.sizes.xs,
+    fontWeight: Typography.weights.bold,
+    color: Colors.primaryDark,
+  },
+  bookingStationName: {
+    fontSize: Typography.sizes.sm,
+    fontWeight: Typography.weights.bold,
+    color: Colors.textPrimary,
+    marginTop: 2,
+    maxWidth: 220,
+  },
+  bookingStatusPill: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: BorderRadius.full,
+  },
+  statusActiveBg: {
+    backgroundColor: Colors.successLight,
+  },
+  statusActiveText: {
+    color: Colors.success,
+    fontSize: Typography.sizes.xs,
+    fontWeight: Typography.weights.bold,
+  },
+  statusCancelBg: {
+    backgroundColor: Colors.dangerLight,
+  },
+  statusCancelText: {
+    color: Colors.danger,
+    fontSize: Typography.sizes.xs,
+    fontWeight: Typography.weights.bold,
+  },
+  bookingDetailsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginVertical: Spacing.sm,
+  },
+  bookingDetailItem: {
+    fontSize: Typography.sizes.xs,
+    color: Colors.textSecondary,
+  },
+  bookingActionsRow: {
+    borderTopWidth: 1,
+    borderTopColor: Colors.borderLight,
+    paddingTop: 8,
+    alignItems: 'flex-end',
+  },
+  cancelBookingBtn: {
+    backgroundColor: Colors.dangerLight,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: BorderRadius.xs,
+  },
+  cancelBookingBtnText: {
+    color: Colors.danger,
+    fontSize: Typography.sizes.xs,
+    fontWeight: Typography.weights.bold,
+  },
+  walletHeroCard: {
+    backgroundColor: Colors.surfaceDark,
+    borderRadius: BorderRadius.xl,
+    padding: Spacing.lg,
+    alignItems: 'center',
+    marginVertical: Spacing.sm,
+    ...Shadows.md,
+  },
+  walletHeroLabel: {
+    fontSize: Typography.sizes.xs,
+    color: Colors.textMuted,
+    textTransform: 'uppercase',
+  },
+  walletHeroValue: {
+    fontSize: Typography.sizes.hero,
+    fontWeight: Typography.weights.extraBold,
+    color: Colors.primaryNeon,
+    marginVertical: 4,
+  },
+  walletHeroSub: {
+    fontSize: Typography.sizes.xs - 1,
+    color: Colors.textMuted,
+  },
+  topUpRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginVertical: Spacing.sm,
+  },
+  topUpBtn: {
+    flex: 1,
+    backgroundColor: Colors.primaryLight,
+    paddingVertical: 10,
+    borderRadius: BorderRadius.md,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(5, 182, 107, 0.3)',
+  },
+  topUpBtnText: {
+    color: Colors.primaryDark,
+    fontSize: Typography.sizes.sm,
+    fontWeight: Typography.weights.bold,
+  },
+  txnRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.borderLight,
+  },
+  txnTitle: {
+    fontSize: Typography.sizes.xs,
+    fontWeight: Typography.weights.semiBold,
+    color: Colors.textPrimary,
+  },
+  txnDate: {
+    fontSize: Typography.sizes.xs - 2,
+    color: Colors.textMuted,
+    marginTop: 2,
+  },
+  txnAmount: {
+    fontSize: Typography.sizes.sm,
+    fontWeight: Typography.weights.bold,
+  },
+  txnCredit: {
+    color: Colors.success,
+  },
+  txnDebit: {
     color: Colors.textPrimary,
   },
   modalDriverCard: {
@@ -1002,6 +1500,12 @@ const styles = StyleSheet.create({
   modalDriverEmail: {
     fontSize: Typography.sizes.xs,
     color: Colors.textSecondary,
+    marginTop: 2,
+  },
+  modalDriverCity: {
+    fontSize: Typography.sizes.xs,
+    color: Colors.primaryDark,
+    fontWeight: Typography.weights.bold,
     marginTop: 2,
   },
   statsGrid: {
