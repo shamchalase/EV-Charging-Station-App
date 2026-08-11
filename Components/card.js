@@ -2,12 +2,19 @@ import React from 'react';
 import { StyleSheet, View, Text, TouchableOpacity, ImageBackground } from 'react-native';
 import { Colors, Shadows, BorderRadius, Spacing, Typography } from './theme';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { formatDistance, estimateTravelTime } from './locationUtils';
 
-function Card({ station, onPress, onToggleFavorite, isFavorite = false }) {
+function Card({ station, onPress, onToggleFavorite, isFavorite = false, isClosest = false, userLocation }) {
   if (!station) return null;
 
   const isFastCharger = station.maxPowerKw >= 50;
   const isHighAvailability = station.availablePortsCount > 0;
+  
+  const displayDistance = station.calculatedDistanceKm !== undefined 
+    ? formatDistance(station.calculatedDistanceKm) 
+    : `${station.distanceKm} km`;
+
+  const displayTime = station.calculatedTime || station.time;
 
   return (
     <TouchableOpacity 
@@ -15,7 +22,7 @@ function Card({ station, onPress, onToggleFavorite, isFavorite = false }) {
       style={styles.cardWrapper} 
       onPress={onPress}
     >
-      <View style={styles.cardContainer}>
+      <View style={[styles.cardContainer, isClosest && styles.closestCardBorder]}>
         {/* Cover Image Header */}
         <ImageBackground 
           source={station.image} 
@@ -25,11 +32,20 @@ function Card({ station, onPress, onToggleFavorite, isFavorite = false }) {
           {/* Dark gradient overlay for readability */}
           <View style={styles.imageOverlay} />
 
-          {/* Top Row: Speed Tag & Favorite Button */}
+          {/* Top Row: Speed Tag, Closest Badge, & Favorite Button */}
           <View style={styles.topRow}>
-            <View style={[styles.badge, styles.speedBadge]}>
-              <Ionicons name="flash" size={13} color="#FFFFFF" />
-              <Text style={styles.badgeText}>{station.maxPowerKw} kW Fast</Text>
+            <View style={styles.topBadgesLeft}>
+              {isClosest && (
+                <View style={styles.closestBadge}>
+                  <Ionicons name="location" size={12} color="#FFFFFF" />
+                  <Text style={styles.closestBadgeText}>Closest To You</Text>
+                </View>
+              )}
+
+              <View style={[styles.badge, styles.speedBadge]}>
+                <Ionicons name="flash" size={13} color="#FFFFFF" />
+                <Text style={styles.badgeText}>{station.maxPowerKw} kW Fast</Text>
+              </View>
             </View>
 
             <TouchableOpacity 
@@ -51,8 +67,8 @@ function Card({ station, onPress, onToggleFavorite, isFavorite = false }) {
           {/* Bottom Floating Bar inside Image: Distance & Availability */}
           <View style={styles.imageBottomBar}>
             <View style={styles.etaPill}>
-              <Ionicons name="time-outline" size={13} color={Colors.textPrimary} />
-              <Text style={styles.etaText}>{station.time}</Text>
+              <Ionicons name="navigate-circle" size={14} color={Colors.primaryDark} />
+              <Text style={styles.etaText}>{displayDistance} • {displayTime}</Text>
             </View>
 
             <View style={[
@@ -95,7 +111,7 @@ function Card({ station, onPress, onToggleFavorite, isFavorite = false }) {
           <View style={styles.locationRow}>
             <Ionicons name="location-outline" size={14} color={Colors.textMuted} />
             <Text style={styles.addressText} numberOfLines={1}>
-              {station.shortAddress || station.address} • <Text style={styles.distanceHighlight}>{station.distanceKm} km</Text>
+              {station.shortAddress || station.address} • <Text style={styles.distanceHighlight}>{displayDistance}</Text>
             </Text>
           </View>
 
@@ -134,6 +150,11 @@ const styles = StyleSheet.create({
     borderColor: Colors.border,
     ...Shadows.md,
   },
+  closestCardBorder: {
+    borderColor: Colors.primaryNeon,
+    borderWidth: 2,
+    ...Shadows.glow,
+  },
   imageBackground: {
     width: '100%',
     height: 160,
@@ -154,6 +175,25 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+  },
+  topBadgesLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  closestBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: Colors.primary,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: BorderRadius.full,
+  },
+  closestBadgeText: {
+    color: '#FFFFFF',
+    fontSize: Typography.sizes.xs,
+    fontWeight: Typography.weights.bold,
+    marginLeft: 3,
   },
   badge: {
     flexDirection: 'row',
@@ -191,7 +231,7 @@ const styles = StyleSheet.create({
   etaPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.92)',
+    backgroundColor: 'rgba(255, 255, 255, 0.95)',
     paddingHorizontal: Spacing.sm + 2,
     paddingVertical: 4,
     borderRadius: BorderRadius.full,

@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   StyleSheet,
   ScrollView,
@@ -10,19 +10,110 @@ import {
   SafeAreaView,
   Modal,
   Alert,
+  ActivityIndicator,
+  Platform,
 } from 'react-native';
+import * as Location from 'expo-location';
 import { Colors, Shadows, BorderRadius, Spacing, Typography } from '../Components/theme';
 import { Ionicons, MaterialCommunityIcons, FontAwesome5 } from '@expo/vector-icons';
 import Card from '../Components/card';
-import { stations, currentUser, manufacturerBrands } from '../Components/data';
+import { stations as defaultStations, currentUser, manufacturerBrands } from '../Components/data';
+import { calculateDistanceKm, formatDistance, estimateTravelTime } from '../Components/locationUtils';
 
 function Home({ navigation }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedBrand, setSelectedBrand] = useState('all');
   const [onlyAvailable, setOnlyAvailable] = useState(false);
   const [onlyFastDC, setOnlyFastDC] = useState(false);
+  const [sortBy, setSortBy] = useState('distance'); // 'distance', 'speed', 'rating', 'price'
   const [favoriteIds, setFavoriteIds] = useState(currentUser.savedStations || ['TS1']);
   const [showProfileModal, setShowProfileModal] = useState(false);
+
+  // User GPS Location State
+  const [userLocation, setUserLocation] = useState(currentUser.defaultLocation);
+  const [locationName, setLocationName] = useState(currentUser.defaultLocation.city);
+  const [isDetectingLocation, setIsDetectingLocation] = useState(false);
+  const [locationError, setLocationError] = useState(null);
+
+  // Function to request and fetch user's live GPS coordinates
+  const detectUserCurrentLocation = async (showFeedback = false) => {
+    setIsDetectingLocation(true);
+    setLocationError(null);
+
+    try {
+      // 1. Try Expo Location API
+      let { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        // If permission denied, fallback to browser geolocation on web if available
+        if (Platform.OS === 'web' && navigator.geolocation) {
+          navigator.geolocation.getCurrentPosition(
+            (pos) => {
+              const coords = {
+                latitude: pos.coords.latitude,
+                longitude: pos.coords.longitude,
+                city: 'Current Detected Location',
+              };
+              setUserLocation(coords);
+              setLocationName('Live GPS Location');
+              setIsDetectingLocation(false);
+              if (showFeedback) Alert.alert('GPS Location Updated', 'Showing nearest charging stations based on your live coordinates.');
+            },
+            (err) => {
+              setIsDetectingLocation(false);
+              setLocationName('Delhi NCR (Default)');
+            }
+          );
+          return;
+        }
+
+        setLocationError('Permission denied. Using default location.');
+        setIsDetectingLocation(false);
+        return;
+      }
+
+      // Fetch accurate position
+      let location = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
+
+      const { latitude, longitude } = location.coords;
+      let detectedCityName = 'Live GPS Location';
+
+      try {
+        // Reverse geocoding to human readable place name
+        let reverseGeocode = await Location.reverseGeocodeAsync({ latitude, longitude });
+        if (reverseGeocode && reverseGeocode.length > 0) {
+          const place = reverseGeocode[0];
+          detectedCityName = [place.district || place.subregion || place.name, place.city]
+            .filter(Boolean)
+            .join(', ') || 'Live Location';
+        }
+      } catch (e) {
+        detectedCityName = `${latitude.toFixed(3)}°, ${longitude.toFixed(3)}°`;
+      }
+
+      setUserLocation({
+        latitude,
+        longitude,
+        city: detectedCityName,
+      });
+      setLocationName(detectedCityName);
+
+      if (showFeedback) {
+        Alert.alert('Location Detected 📍', `Updated your position to: ${detectedCityName}\nShowing closest charging stations.`);
+      }
+    } catch (err) {
+      console.log('Location detection fallback:', err);
+      setLocationError('Could not fetch live GPS. Showing Delhi NCR hubs.');
+    } finally {
+      setIsDetectingLocation(false);
+    }
+  };
+
+  // Auto-detect GPS location on component mount
+  useEffect(() => {
+    detectUserCurrentLocation(false);
+  }, []);
 
   // Toggle favorite station
   const toggleFavorite = (stationId) => {
@@ -31,9 +122,24 @@ function Home({ navigation }) {
     );
   };
 
-  // Filter stations based on search, brand, availability, and speed
-  const filteredStations = useMemo(() => {
-    return stations.filter((station) => {
+  // Calculate live dynamic distance & sort all stations from user's current GPS location
+  const processedStations = useMemo(() => {
+    const userLat = userLocation?.latitude || 28.4980;
+    const userLon = userLocation?.longitude || 77.0850;
+
+    // Map each station with calculated live distance from user GPS
+    const listWithDistance = defaultStations.map((st) => {
+      const dist = calculateDistanceKm(userLat, userLon, st.latitude, st.longitude);
+      const travelTime = estimateTravelTime(dist);
+      return {
+        ...st,
+        calculatedDistanceKm: dist,
+        calculatedTime: travelTime,
+      };
+    });
+
+    // Filter by Brand, Availability, Speed, and Search Query
+    const filtered = listWithDistance.filter((station) => {
       // Brand filter
       if (selectedBrand !== 'all' && station.company.toLowerCase() !== selectedBrand.toLowerCase()) {
         return false;
@@ -56,7 +162,27 @@ function Home({ navigation }) {
       }
       return true;
     });
-  }, [searchQuery, selectedBrand, onlyAvailable, onlyFastDC]);
+
+    // Sort according to active sort criteria (Default: Distance - Nearest First)
+    return filtered.sort((a, b) => {
+      if (sortBy === 'distance') {
+        return a.calculatedDistanceKm - b.calculatedDistanceKm;
+      }
+      if (sortBy === 'speed') {
+        return b.maxPowerKw - a.maxPowerKw;
+      }
+      if (sortBy === 'rating') {
+        return b.rating - a.rating;
+      }
+      if (sortBy === 'price') {
+        return a.pricePerKwh - b.pricePerKwh;
+      }
+      return 0;
+    });
+  }, [userLocation, searchQuery, selectedBrand, onlyAvailable, onlyFastDC, sortBy]);
+
+  // Closest station ID (if sorted by distance)
+  const closestStationId = processedStations.length > 0 && sortBy === 'distance' ? processedStations[0].id : null;
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -79,10 +205,23 @@ function Home({ navigation }) {
             </View>
             <View style={{ marginLeft: 10 }}>
               <Text style={styles.greetingText}>Hello, {currentUser.name.split(' ')[0]} ⚡</Text>
-              <View style={styles.locationPill}>
-                <Ionicons name="location-sharp" size={12} color={Colors.primary} />
-                <Text style={styles.locationText}>New Delhi & NCR</Text>
-              </View>
+              
+              {/* Dynamic GPS Location Pill with Refresh Trigger */}
+              <TouchableOpacity 
+                style={styles.locationPill}
+                activeOpacity={0.7}
+                onPress={() => detectUserCurrentLocation(true)}
+              >
+                {isDetectingLocation ? (
+                  <ActivityIndicator size="small" color={Colors.primary} style={{ marginRight: 4 }} />
+                ) : (
+                  <Ionicons name="location-sharp" size={13} color={Colors.primaryNeon} />
+                )}
+                <Text style={styles.locationText} numberOfLines={1}>
+                  {isDetectingLocation ? 'Detecting GPS...' : locationName}
+                </Text>
+                <Ionicons name="sync-outline" size={12} color={Colors.textSecondary} style={{ marginLeft: 4 }} />
+              </TouchableOpacity>
             </View>
           </TouchableOpacity>
 
@@ -106,6 +245,30 @@ function Home({ navigation }) {
               <Ionicons name="log-out-outline" size={20} color={Colors.textSecondary} />
             </TouchableOpacity>
           </View>
+        </View>
+
+        {/* Live GPS Proximity Banner */}
+        <View style={styles.gpsBanner}>
+          <View style={styles.gpsBannerLeft}>
+            <View style={styles.gpsPulseCircle}>
+              <Ionicons name="navigate" size={16} color="#FFFFFF" />
+            </View>
+            <View style={{ marginLeft: 10, flex: 1 }}>
+              <Text style={styles.gpsBannerTitle}>Live Location-Based Routing</Text>
+              <Text style={styles.gpsBannerSub}>
+                Stations are sorted dynamically from your current position ({formatDistance(processedStations[0]?.calculatedDistanceKm || 0)} nearest).
+              </Text>
+            </View>
+          </View>
+
+          <TouchableOpacity 
+            style={styles.gpsRefreshBtn}
+            onPress={() => detectUserCurrentLocation(true)}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="locate" size={16} color={Colors.primaryDark} />
+            <Text style={styles.gpsRefreshText}>Update GPS</Text>
+          </TouchableOpacity>
         </View>
 
         {/* Connected EV Status Card */}
@@ -249,24 +412,52 @@ function Home({ navigation }) {
           </ScrollView>
         </View>
 
+        {/* Sorting Bar */}
+        <View style={styles.sortingBar}>
+          <Text style={styles.sortLabel}>Sort By:</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.sortOptions}>
+            {[
+              { id: 'distance', label: '📍 Nearest First' },
+              { id: 'speed', label: '⚡ Fastest Power' },
+              { id: 'rating', label: '★ Top Rated' },
+              { id: 'price', label: '💰 Lowest Price' },
+            ].map((sortOption) => {
+              const isSelected = sortBy === sortOption.id;
+              return (
+                <TouchableOpacity
+                  key={sortOption.id}
+                  style={[styles.sortChip, isSelected && styles.sortChipActive]}
+                  onPress={() => setSortBy(sortOption.id)}
+                  activeOpacity={0.8}
+                >
+                  <Text style={[styles.sortChipText, isSelected && styles.sortChipTextActive]}>
+                    {sortOption.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
+        </View>
+
         {/* Section Header */}
         <View style={styles.sectionHeader}>
           <View>
             <Text style={styles.sectionTitle}>
-              {selectedBrand === 'all' ? 'Nearby Charging Hubs' : `${selectedBrand} Stations`}
+              {selectedBrand === 'all' ? 'Charging Hubs Near You' : `${selectedBrand} Stations`}
             </Text>
             <Text style={styles.sectionSubtitle}>
-              Found {filteredStations.length} charging locations
+              Found {processedStations.length} stations matching your criteria
             </Text>
           </View>
 
-          {(selectedBrand !== 'all' || onlyFastDC || onlyAvailable || searchQuery) && (
+          {(selectedBrand !== 'all' || onlyFastDC || onlyAvailable || searchQuery || sortBy !== 'distance') && (
             <TouchableOpacity 
               onPress={() => {
                 setSelectedBrand('all');
                 setOnlyFastDC(false);
                 setOnlyAvailable(false);
                 setSearchQuery('');
+                setSortBy('distance');
               }}
             >
               <Text style={styles.resetFilterText}>Reset Filters</Text>
@@ -274,23 +465,25 @@ function Home({ navigation }) {
           )}
         </View>
 
-        {/* Station Cards List */}
-        {filteredStations.length > 0 ? (
-          filteredStations.map((station) => (
+        {/* Station Cards List with Proximity Sorting */}
+        {processedStations.length > 0 ? (
+          processedStations.map((station) => (
             <Card
               key={station.id}
               station={station}
+              userLocation={userLocation}
+              isClosest={station.id === closestStationId}
               isFavorite={favoriteIds.includes(station.id)}
               onToggleFavorite={toggleFavorite}
-              onPress={() => navigation.navigate('IndividualPage', { station })}
+              onPress={() => navigation.navigate('IndividualPage', { station, userLocation })}
             />
           ))
         ) : (
           <View style={styles.emptyState}>
             <MaterialCommunityIcons name="ev-station" size={54} color={Colors.textMuted} />
-            <Text style={styles.emptyStateTitle}>No Charging Stations Found</Text>
+            <Text style={styles.emptyStateTitle}>No Nearby Charging Stations</Text>
             <Text style={styles.emptyStateSubtitle}>
-              Try adjusting your search terms, changing filters, or selecting a different brand.
+              Try adjusting your search terms, changing filters, or expanding your search radius.
             </Text>
             <TouchableOpacity 
               style={styles.emptyResetButton}
@@ -299,9 +492,10 @@ function Home({ navigation }) {
                 setOnlyFastDC(false);
                 setOnlyAvailable(false);
                 setSearchQuery('');
+                setSortBy('distance');
               }}
             >
-              <Text style={styles.emptyResetText}>View All Stations</Text>
+              <Text style={styles.emptyResetText}>View All Nearby Stations</Text>
             </TouchableOpacity>
           </View>
         )}
@@ -411,12 +605,19 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     marginTop: 2,
+    backgroundColor: Colors.surfaceElevated,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: BorderRadius.full,
+    borderWidth: 1,
+    borderColor: Colors.border,
   },
   locationText: {
     fontSize: Typography.sizes.xs,
-    color: Colors.textSecondary,
+    color: Colors.textPrimary,
     marginLeft: 3,
-    fontWeight: Typography.weights.medium,
+    fontWeight: Typography.weights.bold,
+    maxWidth: 160,
   },
   headerActions: {
     flexDirection: 'row',
@@ -445,11 +646,63 @@ const styles = StyleSheet.create({
     fontWeight: Typography.weights.bold,
     color: Colors.primaryDark,
   },
+  gpsBanner: {
+    backgroundColor: Colors.surface,
+    borderRadius: BorderRadius.lg,
+    padding: Spacing.md,
+    marginVertical: Spacing.xs,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: Colors.primaryLight,
+    ...Shadows.sm,
+  },
+  gpsBannerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+    marginRight: 10,
+  },
+  gpsPulseCircle: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: Colors.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  gpsBannerTitle: {
+    fontSize: Typography.sizes.xs,
+    fontWeight: Typography.weights.bold,
+    color: Colors.textPrimary,
+  },
+  gpsBannerSub: {
+    fontSize: Typography.sizes.xs - 1,
+    color: Colors.textSecondary,
+    marginTop: 2,
+  },
+  gpsRefreshBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: Colors.primaryLight,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: BorderRadius.full,
+    borderWidth: 1,
+    borderColor: 'rgba(5, 182, 107, 0.3)',
+  },
+  gpsRefreshText: {
+    fontSize: Typography.sizes.xs,
+    color: Colors.primaryDark,
+    fontWeight: Typography.weights.bold,
+    marginLeft: 4,
+  },
   vehicleCard: {
     backgroundColor: Colors.surfaceDark,
     borderRadius: BorderRadius.xl,
     padding: Spacing.md + 2,
-    marginVertical: Spacing.sm + 2,
+    marginVertical: Spacing.sm,
     ...Shadows.lg,
   },
   vehicleHeader: {
@@ -534,7 +787,7 @@ const styles = StyleSheet.create({
     borderRadius: BorderRadius.lg,
     paddingHorizontal: Spacing.md,
     height: 48,
-    marginVertical: Spacing.sm,
+    marginVertical: Spacing.xs,
     borderWidth: 1,
     borderColor: Colors.border,
     ...Shadows.sm,
@@ -609,11 +862,46 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     marginRight: 5,
   },
+  sortingBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginVertical: Spacing.xs,
+  },
+  sortLabel: {
+    fontSize: Typography.sizes.xs,
+    color: Colors.textMuted,
+    fontWeight: Typography.weights.bold,
+    marginRight: 6,
+  },
+  sortOptions: {
+    gap: 6,
+  },
+  sortChip: {
+    backgroundColor: Colors.surface,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: BorderRadius.full,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  sortChipActive: {
+    backgroundColor: Colors.surfaceDark,
+    borderColor: Colors.surfaceDark,
+  },
+  sortChipText: {
+    fontSize: Typography.sizes.xs,
+    color: Colors.textSecondary,
+    fontWeight: Typography.weights.medium,
+  },
+  sortChipTextActive: {
+    color: '#FFFFFF',
+    fontWeight: Typography.weights.bold,
+  },
   sectionHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'flex-end',
-    marginTop: Spacing.md,
+    marginTop: Spacing.sm,
     marginBottom: Spacing.xs,
   },
   sectionTitle: {

@@ -11,14 +11,18 @@ import {
   Modal,
   Alert,
   Share,
+  Linking,
+  Platform,
 } from 'react-native';
 import { Colors, Shadows, BorderRadius, Spacing, Typography } from '../Components/theme';
 import { Ionicons, MaterialCommunityIcons, FontAwesome5 } from '@expo/vector-icons';
 import { stations, currentUser } from '../Components/data';
+import { formatDistance, estimateTravelTime } from '../Components/locationUtils';
 
 function IndividualPage({ route, navigation }) {
-  // Grab station from route params or fallback to first station
+  // Grab station and userLocation from route params or fallback to first station
   const station = route.params?.station || stations[0];
+  const userLocation = route.params?.userLocation || currentUser.defaultLocation;
 
   const [isFavorite, setIsFavorite] = useState(false);
   const [selectedPort, setSelectedPort] = useState(
@@ -35,6 +39,12 @@ function IndividualPage({ route, navigation }) {
   const [runningCost, setRunningCost] = useState(0);
   const [chargingSeconds, setChargingSeconds] = useState(0);
 
+  // Dynamic calculated distance
+  const displayDistance = station.calculatedDistanceKm !== undefined 
+    ? formatDistance(station.calculatedDistanceKm) 
+    : `${station.distanceKm} km`;
+  const displayTime = station.calculatedTime || station.time;
+
   // Calculate estimated energy (kWh), cost, and range added
   const chargingPowerKw = Math.min(
     selectedPort?.powerKw || station.maxPowerKw || 50,
@@ -50,20 +60,37 @@ function IndividualPage({ route, navigation }) {
   const handleShare = async () => {
     try {
       await Share.share({
-        message: `⚡ Check out ${station.stationName} on VoltCharge EV Network!\nAddress: ${station.address}\nMax Speed: ${station.maxPowerKw} kW • Rate: ₹${station.pricePerKwh}/kWh`,
+        message: `⚡ Check out ${station.stationName} on VoltCharge EV Network!\nAddress: ${station.address}\nDistance: ${displayDistance}\nMax Speed: ${station.maxPowerKw} kW • Rate: ₹${station.pricePerKwh}/kWh`,
       });
     } catch (error) {
       console.log(error);
     }
   };
 
-  // Open directions alert
+  // Open direct turn-by-turn navigation in Maps
   const handleDirections = () => {
-    Alert.alert(
-      'Navigating to Station',
-      `Routing to ${station.stationName} (${station.distanceKm} km away). ETA: ${station.time}.`,
-      [{ text: 'Start Navigation', onPress: () => console.log('Navigation started') }, { text: 'Cancel', style: 'cancel' }]
-    );
+    const lat = station.latitude || 28.4952;
+    const lon = station.longitude || 77.0892;
+    const url = Platform.select({
+      ios: `maps://app?daddr=${lat},${lon}`,
+      android: `google.navigation:q=${lat},${lon}`,
+      default: `https://www.google.com/maps/dir/?api=1&destination=${lat},${lon}`,
+    });
+
+    Linking.canOpenURL(url)
+      .then((supported) => {
+        if (supported) {
+          Linking.openURL(url);
+        } else {
+          Linking.openURL(`https://www.google.com/maps/dir/?api=1&destination=${lat},${lon}`);
+        }
+      })
+      .catch(() => {
+        Alert.alert(
+          'Starting Turn-by-Turn Navigation',
+          `Routing to ${station.stationName} (${displayDistance} away, ETA: ${displayTime}).`
+        );
+      });
   };
 
   // Confirm booking & create pass
@@ -167,7 +194,7 @@ function IndividualPage({ route, navigation }) {
 
         {/* Content Sheet */}
         <View style={styles.contentSheet}>
-          {/* Quick Metrics Bar */}
+          {/* Quick Metrics Bar with Live Distance */}
           <View style={styles.metricsBar}>
             <View style={styles.metricItem}>
               <Ionicons name="star" size={16} color="#F59E0B" />
@@ -177,8 +204,8 @@ function IndividualPage({ route, navigation }) {
             <View style={styles.metricDivider} />
             <View style={styles.metricItem}>
               <Ionicons name="navigate-outline" size={16} color={Colors.primaryDark} />
-              <Text style={styles.metricValue}>{station.distanceKm} km</Text>
-              <Text style={styles.metricLabel}>ETA {station.time}</Text>
+              <Text style={styles.metricValue}>{displayDistance}</Text>
+              <Text style={styles.metricLabel}>ETA {displayTime}</Text>
             </View>
             <View style={styles.metricDivider} />
             <View style={styles.metricItem}>
@@ -195,21 +222,23 @@ function IndividualPage({ route, navigation }) {
             </View>
           </View>
 
-          {/* Location & Directions Card */}
+          {/* Location & Real-Time Directions Card */}
           <View style={styles.locationCard}>
             <View style={styles.locationIconBox}>
               <Ionicons name="location" size={22} color={Colors.primary} />
             </View>
             <View style={styles.locationDetails}>
               <Text style={styles.locationAddress}>{station.address}</Text>
-              <Text style={styles.locationDistance}>{station.distanceKm} km from your current spot</Text>
+              <Text style={styles.locationDistance}>
+                {displayDistance} away from your live GPS spot • {displayTime} drive
+              </Text>
             </View>
             <TouchableOpacity 
               style={styles.directionsBtn}
               onPress={handleDirections}
               activeOpacity={0.8}
             >
-              <Ionicons name="map-outline" size={16} color="#FFFFFF" />
+              <Ionicons name="navigate" size={15} color="#FFFFFF" />
               <Text style={styles.directionsBtnText}>Directions</Text>
             </TouchableOpacity>
           </View>
@@ -217,7 +246,7 @@ function IndividualPage({ route, navigation }) {
           {/* Charging Ports Selector */}
           <View style={styles.sectionContainer}>
             <View style={styles.sectionHeaderRow}>
-              <Text style={styles.sectionTitle}>Select Charging Port</Text>
+              <Text style={styles.sectionTitle}>Select Charging Bay / Port</Text>
               <Text style={styles.sectionSubBadge}>
                 {station.availablePortsCount} Available Now
               </Text>
@@ -361,7 +390,9 @@ function IndividualPage({ route, navigation }) {
       <View style={styles.bottomBar}>
         <View style={styles.bottomBarInfo}>
           <Text style={styles.bottomBarTotal}>Est. ₹{estimatedCost}</Text>
-          <Text style={styles.bottomBarSub}>{selectedDurationMins} Mins • {selectedPort?.name?.split(' ')[0] || 'Port 01'}</Text>
+          <Text style={styles.bottomBarSub}>
+            {selectedDurationMins} Mins • {selectedPort?.name?.split(' ')[0] || 'Port 01'} • {displayDistance}
+          </Text>
         </View>
 
         <TouchableOpacity 
@@ -408,6 +439,10 @@ function IndividualPage({ route, navigation }) {
                 <View style={styles.ticketRow}>
                   <Text style={styles.ticketLabel}>Station</Text>
                   <Text style={styles.ticketValue} numberOfLines={1}>{station.stationName}</Text>
+                </View>
+                <View style={styles.ticketRow}>
+                  <Text style={styles.ticketLabel}>Distance</Text>
+                  <Text style={styles.ticketValue}>{displayDistance} ({displayTime})</Text>
                 </View>
                 <View style={styles.ticketRow}>
                   <Text style={styles.ticketLabel}>Reserved Port</Text>
@@ -688,7 +723,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: Colors.surfaceDark,
-    paddingHorizontal: 10,
+    paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: BorderRadius.md,
   },
